@@ -43,9 +43,10 @@ def available_types() -> Dict[str, BuilderFn]:
 # -----------------------------------------------------
 def _register_defaults() -> None:
     # 지연 import: plugins.pipeline 이 registry 를 import 하지 않도록
-    from plugins.ground.pipeline import build_http_async_pipeline
+    from ground.pipeline import build_http_async_pipeline, build_http_async_pipeline_with_input
 
     register_builder("http_async", build_http_async_pipeline)
+    register_builder("http_async_with_input", build_http_async_pipeline_with_input)
 
     # 필요 시, 다른 타입도 여기서 바로 매핑 가능:
     # from plugins.glue import build_glue_job_stage

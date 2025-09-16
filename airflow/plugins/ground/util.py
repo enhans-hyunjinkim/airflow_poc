@@ -2,8 +2,6 @@
 import json
 from typing import Any, Dict, Optional, List
 
-from airflow.models import Variable
-
 
 def get_var_raw(key: str, default: Optional[str] = None) -> Optional[str]:
     """
@@ -11,6 +9,7 @@ def get_var_raw(key: str, default: Optional[str] = None) -> Optional[str]:
     존재하지 않으면 default 를 반환.
     """
     try:
+        from airflow.models import Variable
         return Variable.get(key, default_var=default)
     except Exception:
         return default
