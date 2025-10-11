@@ -1,5 +1,35 @@
-pendulum
-apache-airflow-providers-google==10.1.0
-apache-airflow-providers-amazon==9.2.0
-apache-airflow-providers-http==4.9.0
-apache-airflow-providers-slack==8.4.0
+# Airflow 기본 의존성 제약 조건
+--constraint "https://raw.githubusercontent.com/apache/airflow/constraints-3.0.6/constraints-3.11.txt"
+
+# AWS 서비스 연동을 위한 provider (S3, EMR, Glue 등 AWS 서비스 사용)
+apache-airflow-providers-amazon
+
+# HTTP 요청 및 API 통신을 위한 provider
+apache-airflow-providers-http
+
+# PostgreSQL 데이터베이스 연동을 위한 provider
+apache-airflow-providers-postgres
+
+# MongoDB 데이터베이스 연동을 위한 provider
+apache-airflow-providers-mongo
+
+# Redis 캐시 및 메시지 브로커 연동을 위한 provider
+apache-airflow-providers-redis
+
+# SSH 연결 및 원격 작업 실행을 위한 provider
+apache-airflow-providers-ssh
+
+# Slack 알림 통합을 위한 provider
+apache-airflow-providers-slack
+
+# HTTP 클라이언트 라이브러리들
+httpx            # 현대적인 HTTP 클라이언트 (동기/비동기 모두 지원)
+
+# 데이터 처리 및 분석 도구
+pandas            # 데이터 조작 및 분석
+
+# 시간 관련 유틸리티
+pendulum          # 더 직관적인 날짜/시간 처리
+python-dateutil   # 날짜/시간 파싱 및 조작
+
+bcrypt
