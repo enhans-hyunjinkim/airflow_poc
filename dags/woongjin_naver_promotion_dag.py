@@ -1,23 +1,19 @@
 from __future__ import annotations
 
-from pymongo import MongoClient, UpdateOne
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.providers.standard.operators.empty import EmptyOperator
-from airflow.hooks.base import BaseHook
 
 from utils.date_util import now_seoul_str
 from utils.string_util import camel_to_snake, pick
 from operators.naver_api_operator import NaverApiOperator
+from operators.mongo_operator import MongoUpsertOperator
 
 
 
-# ===============================
-# upsert_orders_and_product_orders
-# ===============================
 ORDER_KEYS = [
     "product_order_id",
     "charge_amount_payment_amount",
@@ -57,58 +53,6 @@ PRODUCT_ORDER_KEYS = [
     "logistics_company_id",
     "logistics_center_id",
 ]
-
-
-def upsert_orders_and_product_orders(
-        mongo_uri: str,
-        db_name: str,
-        rows: List[Dict[str, Any]],
-        order_coll: str = "woongjin__naver_order",
-        product_order_coll: str = "woongjin__naver_product_order",
-        batch_size: int = 1000,
-) -> Tuple[int, int]:
-    client = MongoClient(mongo_uri)
-    db = client[db_name]
-    col_order = db[order_coll]
-    col_porder = db[product_order_coll]
-
-    col_order.create_index("product_order_id", unique=False)
-    col_porder.create_index("product_order_id", unique=True)
-
-    now_str = now_seoul_str()
-
-    order_ops: List[UpdateOne] = []
-    porder_ops: List[UpdateOne] = []
-    for r in rows:
-        po_id = r.get("product_order_id")
-        if not po_id:
-            continue
-
-        order_doc = pick(r, ORDER_KEYS)
-        order_doc["collected_at"] = now_str
-        order_ops.append(UpdateOne({"product_order_id": po_id}, {"$set": order_doc}, upsert=True))
-
-        p_doc = pick(r, PRODUCT_ORDER_KEYS)
-        if not p_doc.get("payment_day"):
-            p_date = r.get("payment_date")
-            p_doc["payment_day"] = (p_date[:10] if isinstance(p_date, str) and len(p_date) >= 10 else None)
-        p_doc["collected_at"] = now_str
-        porder_ops.append(UpdateOne({"product_order_id": po_id}, {"$set": p_doc}, upsert=True))
-
-        if len(order_ops) >= batch_size:
-            col_order.bulk_write(order_ops, ordered=False)
-            order_ops.clear()
-        if len(porder_ops) >= batch_size:
-            col_porder.bulk_write(porder_ops, ordered=False)
-            porder_ops.clear()
-
-    if order_ops:
-        col_order.bulk_write(order_ops, ordered=False)
-    if porder_ops:
-        col_porder.bulk_write(porder_ops, ordered=False)
-
-    return len(rows), len(rows)
-
 
 
 def transform_orders_data(**context):
@@ -155,22 +99,47 @@ def add_collected_at(**context):
     return rows
 
 
-def upsert_to_mongo(**context):
+def prepare_order_data(**context):
     ti = context["ti"]
     rows: List[Dict[str, Any]] = ti.xcom_pull(task_ids="add_collected_at") or []
+    
     if not rows:
-        print("No rows to upsert.")
-        return {"upserted_orders": 0, "upserted_product_orders": 0}
+        return []
+    
+    order_data = []
+    for r in rows:
+        po_id = r.get("product_order_id")
+        if not po_id:
+            continue
+        
+        order_doc = pick(r, ORDER_KEYS)
+        order_doc["collected_at"] = now_seoul_str()
+        order_data.append(order_doc)
+    
+    return order_data
 
-    conn = BaseHook.get_connection("mongo_agent_ground")
-    mongo_uri = f"mongodb://{conn.login}:{conn.password}@{conn.host}:{conn.port}/{conn.schema}?authSource=admin"
-    db_name = conn.schema
 
-    o_cnt, p_cnt = upsert_orders_and_product_orders(
-        mongo_uri=mongo_uri, db_name=db_name, rows=rows
-    )
-    print(f"Upserted orders={o_cnt}, product_orders={p_cnt}")
-    return {"upserted_orders": o_cnt, "upserted_product_orders": p_cnt}
+def prepare_product_order_data(**context):
+    ti = context["ti"]
+    rows: List[Dict[str, Any]] = ti.xcom_pull(task_ids="add_collected_at") or []
+    
+    if not rows:
+        return []
+    
+    product_order_data = []
+    for r in rows:
+        po_id = r.get("product_order_id")
+        if not po_id:
+            continue
+        
+        p_doc = pick(r, PRODUCT_ORDER_KEYS)
+        if not p_doc.get("payment_day"):
+            p_date = r.get("payment_date")
+            p_doc["payment_day"] = (p_date[:10] if isinstance(p_date, str) and len(p_date) >= 10 else None)
+        p_doc["collected_at"] = now_seoul_str()
+        product_order_data.append(p_doc)
+    
+    return product_order_data
 
 
 def process_hourly_sales_stats(**context):
@@ -227,42 +196,25 @@ def process_hourly_stats(**context):
     return result
 
 
-def join_and_upsert_stats(**context):
+def prepare_stats_data(**context):
     ti = context["ti"]
     sales_data = ti.xcom_pull(task_ids="process_hourly_sales_stats") or {}
     stats_data = ti.xcom_pull(task_ids="process_hourly_stats") or {}
 
     if not sales_data or not stats_data:
         print("No data to join")
-        return
-
+        return {}
 
     if sales_data["aggregate_date"] != stats_data["aggregate_date"]:
         raise RuntimeError("aggregate_date mismatch between sales and stats")
 
     joined = {**stats_data, **sales_data}
-
-    conn = BaseHook.get_connection("mongo_agent_ground")
-    mongo_uri = f"mongodb://{conn.login}:{conn.password}@{conn.host}:{conn.port}/{conn.schema}?authSource=admin"
-    db_name = conn.schema
-    client = MongoClient(mongo_uri)
-    db = client[db_name]
-    coll = db["woongjin__purchase_statistics"]
-    coll.create_index([("aggregate_date", 1)], unique=True)
-
-    coll.update_one(
-        {"aggregate_date": joined["aggregate_date"]},
-        {"$set": joined},
-        upsert=True,
-    )
-    print(f"✅ woongjin__purchase_statistics upserted for {joined['aggregate_date']}")
     return joined
 
 
 def transform_unpayed_rows(**context):
     ti = context["ti"]
-    
-    # 4일간의 데이터를 각각 수집
+
     all_raw_data = []
     for day_offset in [4, 3, 2, 1]:
         task_id = f"load_unpayed_orders_day{day_offset}"
@@ -273,8 +225,8 @@ def transform_unpayed_rows(**context):
     if not all_raw_data:
         print("No unpayed orders data to transform")
         return []
-    
-    # 데이터 변환
+
+
     transformed_rows = []
     for item in all_raw_data:
         row: Dict[str, Any] = {}
@@ -287,8 +239,8 @@ def transform_unpayed_rows(**context):
         for k, v in product_order.items():
             row[camel_to_snake(k)] = v
         transformed_rows.append(row)
+
     
-    # 추가 변환 로직
     out: List[Dict[str, Any]] = []
     collected_at = now_seoul_str()
 
@@ -317,45 +269,6 @@ def transform_unpayed_rows(**context):
     print(f"Transformed {len(out)} unpayed orders from 4 days")
     return out
 
-
-def upsert_unpayed_to_mongo(**context):
-    ti = context["ti"]
-    rows: List[Dict[str, Any]] = ti.xcom_pull(task_ids="transform_unpayed_rows") or []
-    if not rows:
-        print("No unpayed rows to upsert.")
-        return {"upserted": 0}
-
-    conn = BaseHook.get_connection("mongo_agent_ground")
-    mongo_uri = f"mongodb://{conn.login}:{conn.password}@{conn.host}:{conn.port}/{conn.schema}?authSource=admin"
-    db_name = conn.schema
-
-    client = MongoClient(mongo_uri)
-    db = client[db_name]
-    coll = db["woongjin__unpayed_naver_product_order"]
-
-    coll.create_index(
-        [("product_order_id", 1), ("order_date", 1), ("aggregate_date", 1)],
-        unique=True,
-        name="uq_po_order_aggdate"
-    )
-
-    ops = []
-    for doc in rows:
-        filt = {
-            "product_order_id": doc.get("product_order_id"),
-            "order_date": doc.get("order_date"),
-            "aggregate_date": doc.get("aggregate_date"),
-        }
-        ops.append(UpdateOne(filt, {"$set": doc}, upsert=True))
-
-    if ops:
-        res = coll.bulk_write(ops, ordered=False)
-        upserted = (res.upserted_count or 0)
-        modified = res.modified_count or 0
-        print(f"✅ unpayed upsert: upserted={upserted}, modified={modified}, total_docs={len(rows)}")
-        return {"upserted": upserted, "modified": modified, "total_docs": len(rows)}
-
-    return {"upserted": 0, "modified": 0, "total_docs": 0}
 
 
 # -----------------------
@@ -407,9 +320,32 @@ with DAG(
         python_callable=add_collected_at,
     )
 
-    upsert = PythonOperator(
-        task_id="upsert_to_mongo",
-        python_callable=upsert_to_mongo,
+    prepare_orders = PythonOperator(
+        task_id="prepare_orders",
+        python_callable=prepare_order_data,
+    )
+
+    prepare_product_orders = PythonOperator(
+        task_id="prepare_product_orders", 
+        python_callable=prepare_product_order_data,
+    )
+
+    upsert_orders = MongoUpsertOperator(
+        task_id="upsert_orders",
+        conn_id="mongo_agent_ground",
+        collection="woongjin__naver_order",
+        documents="{{ ti.xcom_pull(task_ids='prepare_orders') }}",
+        filter_fields=["product_order_id", "payment_date"],
+        many=True
+    )
+
+    upsert_product_orders = MongoUpsertOperator(
+        task_id="upsert_product_orders", 
+        conn_id="mongo_agent_ground",
+        collection="woongjin__naver_product_order",
+        documents="{{ ti.xcom_pull(task_ids='prepare_product_orders') }}",
+        filter_fields=["product_order_id", "payment_day"],
+        many=True
     )
 
     collect_sales = NaverApiOperator(
@@ -448,9 +384,19 @@ with DAG(
         python_callable=process_hourly_stats,
     )
 
-    join_and_upsert = PythonOperator(
-        task_id="join_and_upsert_stats",
-        python_callable=join_and_upsert_stats,
+    prepare_stats = PythonOperator(
+        task_id="prepare_stats",
+        python_callable=prepare_stats_data,
+    )
+
+
+    upsert_stats = MongoUpsertOperator(
+        task_id="upsert_stats",
+        conn_id="mongo_agent_ground", 
+        collection="woongjin__purchase_statistics",
+        documents="{{ ti.xcom_pull(task_ids='prepare_stats') }}",
+        filter_fields=["aggregate_date"],
+        many=False
     )
 
 
@@ -485,22 +431,31 @@ with DAG(
         python_callable=transform_unpayed_rows,
     )
 
-    upsert_unpayed = PythonOperator(
-        task_id="upsert_unpayed_to_mongo",
-        python_callable=upsert_unpayed_to_mongo,
+    upsert_unpayed = MongoUpsertOperator(
+        task_id="upsert_unpayed",
+        conn_id="mongo_agent_ground",
+        collection="woongjin__unpayed_naver_product_order", 
+        documents="{{ ti.xcom_pull(task_ids='transform_unpayed_rows') }}",
+        filter_fields=["product_order_id", "order_date", "aggregate_date"],
+        many=True
     )
 
     end = EmptyOperator(task_id="end")
 
 
     # 주문 데이터 처리 파이프라인
-    start >> fetch_orders >> transform_orders >> add_collected_at >> upsert
+    start >> fetch_orders >> transform_orders >> add_collected_at >> [prepare_orders, prepare_product_orders]
+    prepare_orders >> upsert_orders
+    prepare_product_orders >> upsert_product_orders
     
     # 통계 데이터 처리 파이프라인
-    upsert >> [collect_sales, collect_stats]
+    upsert_orders >> [collect_sales, collect_stats]
+    upsert_product_orders >> [collect_sales, collect_stats]
     collect_sales >> process_sales
     collect_stats >> process_stats
-    [process_sales, process_stats] >> join_and_upsert
+    process_sales >> prepare_stats
+    process_stats >> prepare_stats
+    prepare_stats >> upsert_stats
     
     # 미결제 주문 처리 파이프라인 (4일간의 데이터를 병렬로 수집)
-    join_and_upsert >> load_unpayed_orders_tasks >> transform_unpayed >> upsert_unpayed >> end
+    upsert_stats >> load_unpayed_orders_tasks >> transform_unpayed >> upsert_unpayed >> end
