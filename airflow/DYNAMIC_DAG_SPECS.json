@@ -1,0 +1,54 @@
+[
+    {
+        "dag_id": "naver_review_collection_woongjin_dag_test",
+        "template": "http_async",
+        "schedule": "5 15 * * *",
+        "tags": ["woongjin", "naver-review"],
+        "default_args": {
+            "owner": "hyunjin",
+            "start_date": "2025-09-09T00:00:00+09:00",
+            "retries": 0,
+            "retry_delay_minutes": 5
+        },
+        "stages": [
+            {
+                "id": "woongjin_http",
+                "type": "http_async",
+                "params": {
+                    "name": "S3DataLoader",
+                    "http_conn_id": "http_be_naver_review",
+                    "kickoff": {
+                        "start_endpoint": "/airflow/v1/jobs",
+                        "start_method": "POST",
+                        "start_payload": {
+                            "serviceId": "S3DataLoader",
+                            "payload": {
+                                "data": {
+                                    "bucketName": {
+                                        "type": "String",
+                                        "value": "enhans-collectify-chrome-extention-prod",
+                                        "isReference": false
+                                    },
+                                    "key": {
+                                        "type": "String",
+                                        "value": "woongjin/review/NAVER_SMART_STORE/2025/09/07/04/",
+                                        "isReference": false
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "status": {
+                        "status_endpoint": "/airflow/v1/{job_id}/status",
+                        "completion_key": "job.status",
+                        "success_statuses": ["DONE", "COMPLETED", "SUCCEEDED"],
+                        "fail_statuses": ["FAILED", "CANCELLED", "ERROR"],
+                        "poke_interval": 30,
+                        "timeout": 3600
+                    },
+                    "slack_webhook_conn_id": "task-pipeline_naver_review_slack_webhook_conn_id"
+                }
+            }
+        ]
+    }
+]

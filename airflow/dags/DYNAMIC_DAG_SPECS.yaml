@@ -1,0 +1,102 @@
+# Airflow Dynamic DAG Specifications
+# YAML 형식으로 DAG 설정을 관리합니다.
+
+- dag_id: "naver_review_collection_woongjin_dag_test"
+  template: "http_async"
+  schedule: "22 10 * * *"  # 매일 오전 2시
+  tags:
+    - "woongjin"
+    - "naver-review"
+  default_args:
+    owner: "hyunjin"
+    start_date: "2025-09-09"
+    retries: 0
+    retry_delay_minutes: 5
+  stages:
+    # 첫 번째 stage: S3DataLoader
+    - id: "s3_loader_http"
+      type: "http_async"
+      params:
+        name: "S3DataLoader"
+        http_conn_id: "http_be_naver_review"
+        kickoff:
+          start_endpoint: "/data-connectors/jobs"
+          start_method: "POST"
+          start_payload:
+            serviceId: "S3DataLoader"
+            payload:
+              data:
+                bucketName:
+                  type: "String"
+                  value: "enhans-collectify-chrome-extention-prod"
+                  isReference: false
+                key:
+                  type: "String"
+                  value: "woongjin/review/NAVER_SMART_STORE/2025/09/07/04/"
+                  isReference: false
+          start_headers:
+            Authorization:
+              template: "Bearer {{ ti.xcom_pull(task_ids='S3DataLoader_http_async.get_auth_token') }}"
+        status:
+          status_endpoint: "/data-connectors/jobs/{jobId}/status"
+          status_headers:
+            Authorization:
+              template: "Bearer {{ ti.xcom_pull(task_ids='S3DataLoader_http_async.get_auth_token') }}"
+          completion_key: "job.status"
+          success_statuses:
+            - "DONE"
+            - "COMPLETED"
+            - "SUCCEEDED"
+          fail_statuses:
+            - "FAILED"
+            - "CANCELLED"
+            - "ERROR"
+          poke_interval: 30
+          timeout: 3600
+        slack_webhook_conn_id: "task-pipeline_naver_review_slack_webhook_conn_id"
+
+    # 두 번째 stage: Filter (S3DataLoader의 결과를 입력으로 받음)
+    - id: "Filter_http"
+      type: "http_async_with_input"
+      input_data_key: "data.output"  # 이전 stage의 data.output을 가져옴
+      params:
+        name: "Filter"
+        http_conn_id: "http_be_naver_review"
+        kickoff:
+          start_endpoint: "/data-connectors/jobs"
+          start_method: "POST"
+          start_payload:
+            serviceId: "Filter"
+            payload:
+              data:
+                column:
+                  type: "String"
+                  value: "key"
+                condition:
+                  type: "String"
+                  value: "contains"
+                value:
+                  type: "String"
+                  value: "json"
+          start_headers:
+            Authorization:
+              template: "Bearer {{ ti.xcom_pull(task_ids='Filter_http_async.get_auth_token') }}"
+        status:
+          status_endpoint: "/data-connectors/jobs/{job_id}/status"
+          status_headers:
+            Accept:
+              value: "application/json"
+            Authorization:
+              template: "Bearer {{ ti.xcom_pull(task_ids='Filter_http_async.get_auth_token') }}"
+          completion_key: "job.status"
+          success_statuses:
+            - "DONE"
+            - "COMPLETED"
+            - "SUCCEEDED"
+          fail_statuses:
+            - "FAILED"
+            - "CANCELLED"
+            - "ERROR"
+          poke_interval: 30
+          timeout: 3600
+        slack_webhook_conn_id: "task-pipeline_naver_review_slack_webhook_conn_id"
