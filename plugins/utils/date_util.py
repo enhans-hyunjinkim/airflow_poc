@@ -56,3 +56,8 @@ def to_instant_range(start: date, end: date) -> Tuple[datetime, datetime]:
     start_dt = datetime.combine(start, datetime.min.time())
     end_dt_exclusive = datetime.combine(end + timedelta(days=1), datetime.min.time())
     return start_dt, end_dt_exclusive
+
+def yesterday_str(ds: str) -> str:
+    # ds (YYYY-MM-DD) 기준 하루 전
+    d = datetime.strptime(ds, "%Y-%m-%d").date()
+    return (d - timedelta(days=1)).strftime("%Y-%m-%d")

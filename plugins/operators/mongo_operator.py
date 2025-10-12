@@ -276,8 +276,20 @@ class MongoOperator(BaseOperator):
             cursor = cursor.limit(self.limit)
 
         results = list(cursor)
-        self.log.info(f"Found {len(results)} documents")
-        return results
+        
+        # Convert ObjectId to string for XCom serialization
+        cleaned_results = []
+        for doc in results:
+            cleaned_doc = {}
+            for key, value in doc.items():
+                if hasattr(value, '__class__') and value.__class__.__name__ == 'ObjectId':
+                    cleaned_doc[key] = str(value)
+                else:
+                    cleaned_doc[key] = value
+            cleaned_results.append(cleaned_doc)
+        
+        self.log.info(f"Found {len(cleaned_results)} documents")
+        return cleaned_results
 
     def _execute_aggregate(self, collection) -> List[Dict]:
         """Execute aggregate operation."""

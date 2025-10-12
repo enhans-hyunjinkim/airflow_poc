@@ -15,6 +15,10 @@ try:
         DataValidatorOperator,
         ReviewDataValidatorOperator,
     )
+    from .http_operator import (
+        HttpPostOperator,
+        HttpGetOperator,
+    )
 
     __all__ = [
         NaverApiOperator,
@@ -25,6 +29,8 @@ try:
         S3NaverReviewProcessorOperator,
         DataValidatorOperator,
         ReviewDataValidatorOperator,
+        HttpPostOperator,
+        HttpGetOperator,
     ]
 except ImportError:
     __all__ = []
