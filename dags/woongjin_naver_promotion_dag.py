@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
@@ -58,7 +58,7 @@ PRODUCT_ORDER_KEYS = [
 def transform_orders_data(**context):
     ti = context["ti"]
     raw_data = ti.xcom_pull(task_ids="fetch_orders") or []
-    
+
     if not raw_data:
         print("No data to transform")
         return []
@@ -83,7 +83,7 @@ def transform_orders_data(**context):
         for k, v in product_order.items():
             row[camel_to_snake(k)] = v
         transformed_rows.append(row)
-    
+
     print(f"Transformed {len(transformed_rows)} orders")
     return transformed_rows
 
@@ -102,50 +102,50 @@ def add_collected_at(**context):
 def prepare_order_data(**context):
     ti = context["ti"]
     rows: List[Dict[str, Any]] = ti.xcom_pull(task_ids="add_collected_at") or []
-    
+
     if not rows:
         return []
-    
+
     order_data = []
     for r in rows:
         po_id = r.get("product_order_id")
         if not po_id:
             continue
-        
+
         order_doc = pick(r, ORDER_KEYS)
         order_doc["collected_at"] = now_seoul_str()
         order_data.append(order_doc)
-    
+
     return order_data
 
 
 def prepare_product_order_data(**context):
     ti = context["ti"]
     rows: List[Dict[str, Any]] = ti.xcom_pull(task_ids="add_collected_at") or []
-    
+
     if not rows:
         return []
-    
+
     product_order_data = []
     for r in rows:
         po_id = r.get("product_order_id")
         if not po_id:
             continue
-        
+
         p_doc = pick(r, PRODUCT_ORDER_KEYS)
         if not p_doc.get("payment_day"):
             p_date = r.get("payment_date")
             p_doc["payment_day"] = (p_date[:10] if isinstance(p_date, str) and len(p_date) >= 10 else None)
         p_doc["collected_at"] = now_seoul_str()
         product_order_data.append(p_doc)
-    
+
     return product_order_data
 
 
 def process_hourly_sales_stats(**context):
     ti = context["ti"]
     raw_data = ti.xcom_pull(task_ids="collect_hourly_sales_stats") or {}
-    
+
     if not raw_data:
         print("No sales stats data to process")
         return {}
@@ -156,10 +156,10 @@ def process_hourly_sales_stats(**context):
     data_interval_start = context.get('data_interval_start', datetime.now())
     if isinstance(data_interval_start, str):
         data_interval_start = datetime.fromisoformat(data_interval_start.replace('Z', '+00:00'))
-    
+
     exec_dt = data_interval_start - timedelta(days=1)
     date_str = exec_dt.strftime("%Y-%m-%d")
-    
+
     result = {"aggregate_date": date_str, "total_purchases": total_purchases}
     return result
 
@@ -167,7 +167,7 @@ def process_hourly_sales_stats(**context):
 def process_hourly_stats(**context):
     ti = context["ti"]
     raw_data = ti.xcom_pull(task_ids="collect_hourly_stats") or {}
-    
+
     if not raw_data:
         print("No stats data to process")
         return {}
@@ -182,10 +182,10 @@ def process_hourly_stats(**context):
     data_interval_start = context.get('data_interval_start', datetime.now())
     if isinstance(data_interval_start, str):
         data_interval_start = datetime.fromisoformat(data_interval_start.replace('Z', '+00:00'))
-    
+
     exec_dt = data_interval_start - timedelta(days=1)
     date_str = exec_dt.strftime("%Y-%m-%d")
-    
+
     result = {
         "aggregate_date": date_str,
         "collected_at": now_seoul_str(),
@@ -221,7 +221,7 @@ def transform_unpayed_rows(**context):
         raw_data = ti.xcom_pull(task_ids=task_id) or []
         if raw_data:
             all_raw_data.extend(raw_data)
-    
+
     if not all_raw_data:
         print("No unpayed orders data to transform")
         return []
@@ -240,7 +240,7 @@ def transform_unpayed_rows(**context):
             row[camel_to_snake(k)] = v
         transformed_rows.append(row)
 
-    
+
     out: List[Dict[str, Any]] = []
     collected_at = now_seoul_str()
 
@@ -280,7 +280,7 @@ with DAG(
         dag_id="woongjin_naver_promotion_dag",
         default_args=default_args,
         description="네이버 스토어 주문 수집 → 변환 → MongoDB 적재",
-        schedule="@daily",
+        schedule="15 20 * * *",
         start_date=datetime(2025, 9, 30),
         catchup=False,
         tags=["woongjin", "naver-promotion"],
@@ -300,7 +300,7 @@ with DAG(
         fetch_all=True,
         pagination_config={
             "page_param": "page",
-            "page_size_param": "pageSize", 
+            "page_size_param": "pageSize",
             "page_size": 100,
             "start_page": 1,
             "has_next_key": "data.pagination.hasNext",
@@ -326,7 +326,7 @@ with DAG(
     )
 
     prepare_product_orders = PythonOperator(
-        task_id="prepare_product_orders", 
+        task_id="prepare_product_orders",
         python_callable=prepare_product_order_data,
     )
 
@@ -340,7 +340,7 @@ with DAG(
     )
 
     upsert_product_orders = MongoUpsertOperator(
-        task_id="upsert_product_orders", 
+        task_id="upsert_product_orders",
         conn_id="mongo_agent_ground",
         collection="woongjin__naver_product_order",
         documents="{{ ti.xcom_pull(task_ids='prepare_product_orders') }}",
@@ -392,7 +392,7 @@ with DAG(
 
     upsert_stats = MongoUpsertOperator(
         task_id="upsert_stats",
-        conn_id="mongo_agent_ground", 
+        conn_id="mongo_agent_ground",
         collection="woongjin__purchase_statistics",
         documents="{{ ti.xcom_pull(task_ids='prepare_stats') }}",
         filter_fields=["aggregate_date"],
@@ -434,7 +434,7 @@ with DAG(
     upsert_unpayed = MongoUpsertOperator(
         task_id="upsert_unpayed",
         conn_id="mongo_agent_ground",
-        collection="woongjin__unpayed_naver_product_order", 
+        collection="woongjin__unpayed_naver_product_order",
         documents="{{ ti.xcom_pull(task_ids='transform_unpayed_rows') }}",
         filter_fields=["product_order_id", "order_date", "aggregate_date"],
         many=True
@@ -447,7 +447,7 @@ with DAG(
     start >> fetch_orders >> transform_orders >> add_collected_at >> [prepare_orders, prepare_product_orders]
     prepare_orders >> upsert_orders
     prepare_product_orders >> upsert_product_orders
-    
+
     # 통계 데이터 처리 파이프라인
     upsert_orders >> [collect_sales, collect_stats]
     upsert_product_orders >> [collect_sales, collect_stats]
@@ -456,6 +456,6 @@ with DAG(
     process_sales >> prepare_stats
     process_stats >> prepare_stats
     prepare_stats >> upsert_stats
-    
+
     # 미결제 주문 처리 파이프라인 (4일간의 데이터를 병렬로 수집)
     upsert_stats >> load_unpayed_orders_tasks >> transform_unpayed >> upsert_unpayed >> end

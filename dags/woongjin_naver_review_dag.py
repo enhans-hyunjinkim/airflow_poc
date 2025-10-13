@@ -20,16 +20,16 @@ SLACK_CONN_ID = "slack_default"
 def update_latest_product_info(**context):
     """최신 상품 정보 업데이트"""
     ti = context["ti"]
-    
+
     # process_s3_data에서 product_ids 추출
     review_data = ti.xcom_pull(task_ids="process_s3_data") or []
     product_ids = list(set([doc.get("product_id") for doc in review_data if doc.get("product_id")]))
-    
+
     if not product_ids:
         return {"updated": 0}
 
     from airflow.providers.mongo.hooks.mongo import MongoHook
-    
+
     mongo_hook = MongoHook(mongo_conn_id=MONGO_CONN_ID)
     coll = mongo_hook.get_collection("woongjin__product_review_analysis")
 
@@ -66,7 +66,7 @@ with DAG(
         "woongjin_naver_review_dag",
         default_args=default_args,
         description="Woongjin Naver Smart Store Review Dag",
-        # schedule_interval="0 6 * * *",
+        schedule="30 17 * * *",
         catchup=False,
         tags=["woongjin", "naver-review"],
         render_template_as_native_obj=True,

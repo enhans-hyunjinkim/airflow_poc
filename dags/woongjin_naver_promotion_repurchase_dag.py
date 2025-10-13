@@ -53,7 +53,7 @@ with DAG(
         dag_id="woongjin_naver_promotion_repurchase_dag",
         default_args=default_args,
         description="재구매 통계 수집 (Operator 사용) → 변환(7일 확장) → MongoDB upsert",
-        schedule="@weekly",
+        schedule="0 23 * * 0",
         start_date=datetime(2025, 9, 30),
         catchup=False,
         tags=["woongjin", "naver-repurchase"],
