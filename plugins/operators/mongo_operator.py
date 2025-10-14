@@ -76,22 +76,6 @@ class MongoOperator(BaseOperator):
         self.skip = skip
         self.filter_fields = filter_fields
 
-
-        # Handle empty documents or string documents (from Jinja templating)
-        if not self.documents or self.documents == "":
-            self.log.warning("No documents provided for upsert operation, returning empty result")
-            raise AirflowSkipException("No documents provided for upsert operation")
-
-        # Parse string documents (from Jinja templating)
-        if isinstance(self.documents, str):
-            try:
-                import ast
-                self.documents = ast.literal_eval(self.documents)
-                self.log.info(f"Parsed {len(self.documents)} documents from string")
-            except Exception as e:
-                self.log.error(f"Failed to parse documents string: {e}")
-                raise AirflowException(f"Failed to parse documents string: {e}")
-
         # Validate operation
         valid_operations = ['insert', 'update', 'delete', 'find', 'aggregate', 'count', 'upsert']
         if self.operation not in valid_operations:
@@ -110,6 +94,21 @@ class MongoOperator(BaseOperator):
         collection = mongo_hook.get_collection(self.collection, self.database)
 
         self.log.info(f"Executing MongoDB operation: {self.operation}")
+
+        # Handle empty documents or string documents (from Jinja templating)
+        if not self.documents or self.documents == "":
+            self.log.warning("No documents provided for upsert operation, returning empty result")
+            raise AirflowSkipException("No documents provided for upsert operation")
+
+        # Parse string documents (from Jinja templating)
+        if isinstance(self.documents, str):
+            try:
+                import ast
+                self.documents = ast.literal_eval(self.documents)
+                self.log.info(f"Parsed {len(self.documents)} documents from string")
+            except Exception as e:
+                self.log.error(f"Failed to parse documents string: {e}")
+                raise AirflowException(f"Failed to parse documents string: {e}")
 
         try:
             if self.operation == 'insert':
@@ -185,7 +184,7 @@ class MongoOperator(BaseOperator):
 
     def _execute_insert(self, collection) -> Dict[str, Any]:
         """Execute insert operation."""
-        if not self.documents or self.documents == "":
+        if not self.documents:
             raise AirflowException("Documents must be provided for insert operation")
 
         # Extract field types from documents
@@ -330,10 +329,6 @@ class MongoOperator(BaseOperator):
         """
         if not self.filter_fields:
             raise AirflowException("filter_fields must be provided for upsert operation")
-
-        # Handle empty documents
-        if not self.documents or self.documents == "":
-            raise AirflowException("Documents must be provided for insert operation")
 
         # Ensure documents is a list
         documents = self.documents if isinstance(self.documents, list) else [self.documents]
