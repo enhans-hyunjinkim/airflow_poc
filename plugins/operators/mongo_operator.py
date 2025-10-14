@@ -9,7 +9,7 @@ import re
 from typing import Any, Dict, List, Optional, Union
 from airflow.models import BaseOperator
 from airflow.providers.mongo.hooks.mongo import MongoHook
-from airflow.exceptions import AirflowException
+from airflow.exceptions import AirflowException, AirflowSkipException
 
 
 class MongoOperator(BaseOperator):
@@ -37,29 +37,28 @@ class MongoOperator(BaseOperator):
     ui_color = '#4CAF50'
 
     def __init__(
-            self,
-            conn_id: str,
-            collection: str,
-            database: Optional[str] = None,
-            operation: str = 'insert',
-            documents: Optional[Union[Dict, List[Dict]]] = None,
-            query: Optional[Dict] = None,
-            update: Optional[Dict] = None,
-            upsert: bool = False,
-            many: bool = True,
-            pipeline: Optional[List[Dict]] = None,
-            projection: Optional[Dict] = None,
-            sort: Optional[List[tuple]] = None,
-            limit: Optional[int] = None,
-            skip: Optional[int] = None,
-            filter_fields: Optional[List[str]] = None,
-            **kwargs
+        self,
+        conn_id: str,
+        collection: str,
+        database: Optional[str] = None,
+        operation: str = 'insert',
+        documents: Optional[Union[Dict, List[Dict]]] = None,
+        query: Optional[Dict] = None,
+        update: Optional[Dict] = None,
+        upsert: bool = False,
+        many: bool = True,
+        pipeline: Optional[List[Dict]] = None,
+        projection: Optional[Dict] = None,
+        sort: Optional[List[tuple]] = None,
+        limit: Optional[int] = None,
+        skip: Optional[int] = None,
+        filter_fields: Optional[List[str]] = None,
+        **kwargs
     ):
         super().__init__(**kwargs)
 
         self.log.info(f"MongoOperator initialized with kwargs: {kwargs}")
-        self.log.info(
-            f"MongoOperator initialized with conn_id: {conn_id}, database: {database}, collection: {collection}, operation: {operation}, documents: {documents}, query: {query}, update: {update}, upsert: {upsert}, many: {many}, pipeline: {pipeline}, projection: {projection}, sort: {sort}, limit: {limit}, skip: {skip}")
+        self.log.info(f"MongoOperator initialized with conn_id: {conn_id}, database: {database}, collection: {collection}, operation: {operation}, documents: {documents}, query: {query}, update: {update}, upsert: {upsert}, many: {many}, pipeline: {pipeline}, projection: {projection}, sort: {sort}, limit: {limit}, skip: {skip}")
 
         self.conn_id = conn_id
         self.database = database
@@ -76,6 +75,22 @@ class MongoOperator(BaseOperator):
         self.limit = limit
         self.skip = skip
         self.filter_fields = filter_fields
+
+
+        # Handle empty documents or string documents (from Jinja templating)
+        if not self.documents or self.documents == "":
+            self.log.warning("No documents provided for upsert operation, returning empty result")
+            raise AirflowSkipException("No documents provided for upsert operation")
+
+        # Parse string documents (from Jinja templating)
+        if isinstance(self.documents, str):
+            try:
+                import ast
+                self.documents = ast.literal_eval(self.documents)
+                self.log.info(f"Parsed {len(self.documents)} documents from string")
+            except Exception as e:
+                self.log.error(f"Failed to parse documents string: {e}")
+                raise AirflowException(f"Failed to parse documents string: {e}")
 
         # Validate operation
         valid_operations = ['insert', 'update', 'delete', 'find', 'aggregate', 'count', 'upsert']
@@ -170,10 +185,10 @@ class MongoOperator(BaseOperator):
 
     def _execute_insert(self, collection) -> Dict[str, Any]:
         """Execute insert operation."""
-        if not self.documents:
+        if not self.documents or self.documents == "":
             raise AirflowException("Documents must be provided for insert operation")
 
-            # Extract field types from documents
+        # Extract field types from documents
         fields = self._extract_field_types(self.documents)
 
         if self.many and isinstance(self.documents, list):
@@ -276,7 +291,7 @@ class MongoOperator(BaseOperator):
             cursor = cursor.limit(self.limit)
 
         results = list(cursor)
-        
+
         # Convert ObjectId to string for XCom serialization
         cleaned_results = []
         for doc in results:
@@ -287,7 +302,7 @@ class MongoOperator(BaseOperator):
                 else:
                     cleaned_doc[key] = value
             cleaned_results.append(cleaned_doc)
-        
+
         self.log.info(f"Found {len(cleaned_results)} documents")
         return cleaned_results
 
@@ -316,8 +331,9 @@ class MongoOperator(BaseOperator):
         if not self.filter_fields:
             raise AirflowException("filter_fields must be provided for upsert operation")
 
-        if not self.documents:
-            raise AirflowException("documents must be provided for upsert operation")
+        # Handle empty documents
+        if not self.documents or self.documents == "":
+            raise AirflowException("Documents must be provided for insert operation")
 
         # Ensure documents is a list
         documents = self.documents if isinstance(self.documents, list) else [self.documents]
@@ -365,10 +381,7 @@ class MongoOperator(BaseOperator):
 
             except Exception as e:
                 self.log.error(f"Error upserting document {i}: {e}")
-                results.append({
-                    'document_index': i,
-                    'error': str(e)
-                })
+                raise AirflowException(f"Error upserting document {i}: {e}")
 
         self.log.info(f"Upsert operation completed. Processed {len(results)} documents")
         return results
@@ -386,13 +399,13 @@ class MongoInsertOperator(MongoOperator):
     """
 
     def __init__(
-            self,
-            conn_id: str,
-            collection: str,
-            documents: Union[Dict, List[Dict]],
-            database: Optional[str] = None,
-            many: bool = True,
-            **kwargs
+        self,
+        conn_id: str,
+        collection: str,
+        documents: Union[Dict, List[Dict]],
+        database: Optional[str] = None,
+        many: bool = True,
+        **kwargs
     ):
         super().__init__(
             conn_id=conn_id,
@@ -421,14 +434,14 @@ class MongoUpsertOperator(MongoOperator):
     """
 
     def __init__(
-            self,
-            conn_id: str,
-            collection: str,
-            documents: Union[Dict, List[Dict]],
-            filter_fields: List[str],
-            database: Optional[str] = None,
-            many: bool = True,
-            **kwargs
+        self,
+        conn_id: str,
+        collection: str,
+        documents: Union[Dict, List[Dict]],
+        filter_fields: List[str],
+        database: Optional[str] = None,
+        many: bool = True,
+        **kwargs
     ):
         super().__init__(
             conn_id=conn_id,
@@ -457,16 +470,16 @@ class MongoFindOperator(MongoOperator):
     """
 
     def __init__(
-            self,
-            conn_id: str,
-            collection: str,
-            database: Optional[str] = None,
-            query: Optional[Dict] = None,
-            projection: Optional[Dict] = None,
-            sort: Optional[List[tuple]] = None,
-            limit: Optional[int] = None,
-            skip: Optional[int] = None,
-            **kwargs
+        self,
+        conn_id: str,
+        collection: str,
+        database: Optional[str] = None,
+        query: Optional[Dict] = None,
+        projection: Optional[Dict] = None,
+        sort: Optional[List[tuple]] = None,
+        limit: Optional[int] = None,
+        skip: Optional[int] = None,
+        **kwargs
     ):
         super().__init__(
             conn_id=conn_id,
