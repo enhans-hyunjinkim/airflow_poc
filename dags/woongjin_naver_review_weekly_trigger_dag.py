@@ -208,7 +208,7 @@ with DAG(
         task_id="load_reviews",
         conn_id=MONGO_CONN_ID,
         collection="woongjin__product_review_analysis",
-        query={"created_day": {"$gte": "{{ macros.ds_add(ds, -7) }}", "$lt": "{{ ds }}"}},
+        query={"created_day": {"$gte": "{{ macros.ds_add(ds, -6) }}", "$lt": "{{ ds }}"}},
         projection={
             "review_id": 1,
             "product_id": 1,
