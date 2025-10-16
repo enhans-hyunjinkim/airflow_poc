@@ -429,6 +429,7 @@ class StockJsonToMongoOperator(JSONToMongoOperator):
             self,
             source_task_id: str,
             collection_name: str,
+            exclude_fields: Optional[List[str]] = None,
             **kwargs,
     ):
         """
@@ -436,6 +437,7 @@ class StockJsonToMongoOperator(JSONToMongoOperator):
 
         :param source_task_id: Task ID that provides the stock JSON data
         :param collection_name: MongoDB collection name for stock documents
+        :param exclude_fields: List of field names to exclude from the output documents
         """
         super().__init__(
             source_task_id=source_task_id,
@@ -443,6 +445,32 @@ class StockJsonToMongoOperator(JSONToMongoOperator):
             add_metadata=True,
             **kwargs
         )
+        self.exclude_fields = exclude_fields or []
+
+    def _exclude_document_fields(self, document: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Remove specified fields from document.
+
+        :param document: Document to process
+        :return: Document with excluded fields removed
+        """
+        if not self.exclude_fields:
+            return document
+
+        filtered_doc = {}
+        excluded_count = 0
+        
+        for key, value in document.items():
+            if key not in self.exclude_fields:
+                filtered_doc[key] = value
+            else:
+                excluded_count += 1
+                self.log.debug(f"Excluded field '{key}' from document")
+
+        if excluded_count > 0:
+            self.log.info(f"Excluded {excluded_count} fields from document")
+
+        return filtered_doc
 
     def transform_json_data(self, raw_data: Any) -> List[Dict[str, Any]]:
         """
@@ -527,12 +555,15 @@ class StockJsonToMongoOperator(JSONToMongoOperator):
                 # Transform the document
                 transformed_doc = self.transform_document(doc)
 
+                # Exclude specified fields
+                filtered_doc = self._exclude_document_fields(transformed_doc)
+
                 # Add date information if provided
                 if date:
-                    transformed_doc.update({'_date': date})
+                    filtered_doc.update({'_date': date})
 
                 # Add metadata
-                final_doc = self.add_document_metadata(transformed_doc)
+                final_doc = self.add_document_metadata(filtered_doc)
 
                 transformed_documents.append(final_doc)
 

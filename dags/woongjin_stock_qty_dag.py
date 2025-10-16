@@ -39,7 +39,8 @@ with DAG(
     transform_stock_data = StockJsonToMongoOperator(
         task_id='transform_stock_data',
         source_task_id='download_stock_data',
-        collection_name='woongjin__stock_quantity'
+        collection_name='woongjin__stock_quantity',
+        exclude_fields=['fc_amt', 'inbound_amt', 'outbound_amt', 'rc_amt', 'total_amt', 'vf_amt']
     )
 
     load_stock_data = MongoUpsertOperator(
