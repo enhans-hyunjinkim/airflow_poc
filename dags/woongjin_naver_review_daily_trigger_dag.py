@@ -21,7 +21,7 @@ def prepare_review_data(**context):
     reviews = ti.xcom_pull(task_ids="load_reviews") or []
 
     ds = context["ds"]
-    target_date = (datetime.strptime(ds, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    target_date = datetime.strptime(ds, "%Y-%m-%d").strftime("%Y-%m-%d")
 
     processed_reviews = []
     for doc in reviews:
@@ -40,7 +40,6 @@ def prepare_review_data(**context):
     return {"count": len(processed_reviews), "created_day": target_date}
 
 def prepare_analysis_payloads(**context):
-    """분석용 페이로드 준비"""
     ti = context["ti"]
     reviews = ti.xcom_pull(key="reviews", task_ids="prepare_review_data") or []
 
@@ -58,7 +57,6 @@ def prepare_analysis_payloads(**context):
     return {"enqueued": len(payloads), "payloads": payloads}
 
 def prepare_product_report_payloads(**context):
-    """상품 리포트용 페이로드 준비"""
     ti = context["ti"]
     reviews = ti.xcom_pull(key="reviews", task_ids="prepare_review_data") or []
     report_type = ti.xcom_pull(key="report_type", task_ids="prepare_review_data") or "DAILY"
@@ -70,7 +68,6 @@ def prepare_product_report_payloads(**context):
 
     filtered = []
     for r in reviews:
-        # created_day로 간단하게 날짜 비교
         if r.get("created_day") == start_date_input:
             filtered.append(r)
 
@@ -90,7 +87,6 @@ def prepare_product_report_payloads(**context):
     return {"enqueued": len(payloads), "payloads": payloads}
 
 def prepare_brand_report_payloads(**context):
-    """브랜드 리포트용 페이로드 준비"""
     ti = context["ti"]
     reviews = ti.xcom_pull(key="reviews", task_ids="prepare_review_data") or []
     report_type = ti.xcom_pull(key="report_type", task_ids="prepare_review_data") or "DAILY"
@@ -100,7 +96,6 @@ def prepare_brand_report_payloads(**context):
     start_date = start_d.strftime("%Y-%m-%d")
     end_date = end_d.strftime("%Y-%m-%d")
 
-    # MongoDB에서 브랜드 ID 조회
     from airflow.providers.mongo.hooks.mongo import MongoHook
     mongo = MongoHook(mongo_conn_id=MONGO_CONN_ID)
     cat_coll = mongo.get_collection("woongjin__product_category")
@@ -199,7 +194,7 @@ with DAG(
         task_id="load_reviews",
         conn_id=MONGO_CONN_ID,
         collection="woongjin__product_review_analysis",
-        query={"created_day": "{{ macros.ds_add(ds, -1) }}"},
+        query={"created_day": "{{ ds }}"},
         projection={
             "review_id": 1,
             "product_id": 1,

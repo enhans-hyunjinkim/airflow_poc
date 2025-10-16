@@ -95,10 +95,11 @@ class MongoOperator(BaseOperator):
 
         self.log.info(f"Executing MongoDB operation: {self.operation}")
 
-        # Handle empty documents or string documents (from Jinja templating)
-        if not self.documents or self.documents == "":
-            self.log.warning("No documents provided for upsert operation, returning empty result")
-            raise AirflowSkipException("No documents provided for upsert operation")
+        # Handle empty documents or string documents (from Jinja templating) - only for operations that need documents
+        if self.operation in ['insert', 'update', 'upsert']:
+            if not self.documents or self.documents == "":
+                self.log.warning("No documents provided for upsert operation, returning empty result")
+                raise AirflowSkipException("No documents provided for upsert operation")
 
         # Parse string documents (from Jinja templating)
         if isinstance(self.documents, str):
