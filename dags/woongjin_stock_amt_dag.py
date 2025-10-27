@@ -16,7 +16,7 @@ with DAG(
         "woongjin_stock_amt_dag",
         default_args=default_args,
         description="Woongjin Stock Amount DAG",
-        schedule='0 3 * * *', # 10:00 KST
+        schedule='0 1 * * *', # 10:00 KST
         catchup=False,
         tags=["stock", "woongjin"],
         render_template_as_native_obj=True,
@@ -48,7 +48,7 @@ with DAG(
         conn_id='mongo_agent_ground',
         collection='woongjin__stock_amount',
         documents="{{ ti.xcom_pull(task_ids='transform_stock_data') }}",
-        filter_fields=['group', '_date'],
+        filter_fields=['date'],
         many=True
     )
 

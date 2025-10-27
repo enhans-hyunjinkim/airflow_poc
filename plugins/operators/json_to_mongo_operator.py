@@ -5,9 +5,10 @@ This operator transforms JSON data from API responses into MongoDB-ready documen
 It provides a flexible base class for handling various JSON structures.
 """
 
+from abc import abstractmethod
 import json
 from typing import Any, Dict, List, Optional, Union
-from datetime import datetime
+from datetime import datetime, timezone
 
 from airflow.models import BaseOperator
 from airflow.exceptions import AirflowException, AirflowSkipException
@@ -24,7 +25,7 @@ class JSONToMongoOperator(BaseOperator):
     def __init__(
         self,
         source_task_id: str,
-        collection_name: str,
+        collection_name: str = "json_data",
         add_metadata: bool = True,
         metadata_fields: Optional[Dict[str, Any]] = None,
         **kwargs,
@@ -161,7 +162,7 @@ class JSONToMongoOperator(BaseOperator):
             return document
 
         metadata = {
-            "_processed_at": datetime.utcnow(),
+            "_processed_at": datetime.now(),
         }
 
         # Add custom metadata fields
@@ -337,7 +338,7 @@ class SalesJsonToMongoOperator(JSONToMongoOperator):
         self.log.info(f"Successfully transformed {len(all_transformed_documents)} documents")
         return all_transformed_documents
 
-    def _transform_documents_batch(self, documents: List[Dict[str, Any]], date: Optional[str] = None) -> List[Dict[str, Any]]:
+    def _transform_documents_batch(self, documents: List[Dict[str, Any]], _date: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Transform a batch of documents with optional date information.
 
@@ -345,9 +346,14 @@ class SalesJsonToMongoOperator(JSONToMongoOperator):
         :param date: Optional date to add to each document
         :return: List of transformed documents
         """
-        # Apply collection-specific filtering
-        if self.collection_name == "woongjin__sales_by_sku_monthly":
-            documents = self._filter_monthly_records(documents)
+
+        if _date:
+            date_info = {"date": self._normalize_date(_date)}
+        else:
+            date_info = {}
+
+        documents = self._filter_records(documents)
+        self.log.info(f"Documents: {documents}")
 
         transformed_documents = []
 
@@ -361,8 +367,10 @@ class SalesJsonToMongoOperator(JSONToMongoOperator):
                 transformed_doc = self.transform_document(doc)
 
                 # Add date information if provided
-                if date:
-                    transformed_doc.update({'_date': date})
+                if date := transformed_doc.get("date"):
+                    date_info["date"] = self._normalize_date(date)
+
+                transformed_doc.update(date_info)
 
                 # Add metadata
                 final_doc = self.add_document_metadata(transformed_doc)
@@ -375,46 +383,192 @@ class SalesJsonToMongoOperator(JSONToMongoOperator):
 
         return transformed_documents
 
-    def _filter_monthly_records(self, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    @abstractmethod
+    def _filter_records(self, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Filter documents to only include monthly records (yyyymmdd format where day is '01').
-
-        This method is specifically for the 'woongjin__sales_by_sku_monthly' collection
-        to exclude daily records and only keep monthly records.
+        Filter documents to only include records of the target type.
 
         :param documents: List of documents to filter
-        :return: Filtered list containing only monthly records
+        :return: Filtered list containing only records of the target type
         """
-        monthly_documents = []
-        filtered_count = 0
+        pass
+
+    @abstractmethod
+    def _normalize_date(self, date: Union[str, int]) -> str:
+        """
+        Normalize a date string to the format YYYY-MM-DD.
+
+        :param date: Date string to normalize
+        :return: Normalized date string
+        """
+        pass
+
+
+
+class DailySalesJsonToMongoOperator(SalesJsonToMongoOperator):
+    """
+    Specialized operator for daily sales records.
+
+    This operator automatically filters to only include daily records
+    (8-digit date format: YYYYMMDD) and excludes monthly records.
+    """
+
+    def __init__(self, **kwargs):
+        """
+        Initialize Daily Sales JSON to MongoDB operator.
+
+        :param kwargs: Arguments passed to parent SalesJsonToMongoOperator
+        """
+        super().__init__(**kwargs)
+        self.log.info("Initialized DailySalesJsonToMongoOperator - will filter for daily records only")
+
+    def _filter_records(self, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Filter documents to only include daily records (8-digit date format: YYYYMMDD) or records with no date field.
+
+        :param documents: List of documents to filter
+        :return: Filtered list containing only daily records
+        """
+        daily_documents = []
+        other_documents = []
 
         for doc in documents:
             if not isinstance(doc, dict):
+                daily_documents.append(doc)
                 continue
 
             # Check if document has a date field
             date_value = doc.get('date')
             if not date_value:
-                # If no date field, include the document (let other validation handle it)
+                # If no date field, include in other documents
+                daily_documents.append(doc)
+                continue
+
+            # Convert to string and check format
+            date_str = str(date_value).strip()
+
+            # Daily records: 8-digit format (YYYYMMDD)
+            if len(date_str) == 8 and date_str.isdigit():
+                daily_documents.append(doc)
+            else:
+                other_documents.append(doc)
+
+        self.log.info(f"Daily filter: {len(documents)} documents -> {len(daily_documents)} daily records, {len(other_documents)} other records")
+        return daily_documents
+
+    def _normalize_date(self, date: Union[str, int]) -> str:
+        """
+        Normalize a date string to the format YYYY-MM-DD.
+
+        :param date: Date string to normalize
+        :return: Normalized date string
+        """
+        date = str(date)
+
+        try:
+            # Try YYYYMM format first
+            if len(date) == 6 and date.isdigit():
+                return datetime.strptime(date, '%Y%m').strftime('%Y-%m-%d')
+            # Try YYYY-MM-DD format
+            elif len(date) == 10 and date.count('-') == 2:
+                return date  # Already in correct format
+            # Try YYYYMMDD format
+            elif len(date) == 8 and date.isdigit():
+                return datetime.strptime(date, '%Y%m%d').strftime('%Y-%m-%d')
+            else:
+                # If format is not recognized, return as-is
+                self.log.warning(f"Unrecognized date format: {date}")
+                return date
+        except ValueError as e:
+            self.log.error(f"Error parsing date '{date}': {e}")
+            return date
+
+
+class MonthlySalesJsonToMongoOperator(SalesJsonToMongoOperator):
+    """
+    Specialized operator for monthly sales records.
+
+    This operator automatically filters to only include monthly records
+    (6-digit date format: YYYYMM or 8-digit ending with '01': YYYYMM01).
+    """
+
+    def __init__(self, **kwargs):
+        """
+        Initialize Monthly Sales JSON to MongoDB operator.
+
+        :param kwargs: Arguments passed to parent SalesJsonToMongoOperator
+        """
+        super().__init__(**kwargs)
+        self.log.info("Initialized MonthlySalesJsonToMongoOperator - will filter for monthly records only")
+
+    def _filter_records(self, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Filter documents to only include monthly records or records with no date field.
+
+        Monthly records are identified by:
+        - 6-digit format (YYYYMM)
+        - 8-digit format ending with '01' (YYYYMM01)
+
+        :param documents: List of documents to filter
+        :return: Filtered list containing only monthly records
+        """
+        monthly_documents = []
+        other_documents = []
+
+        for doc in documents:
+            if not isinstance(doc, dict):
+                monthly_documents.append(doc)
+                continue
+
+            # Check if document has a date field
+            date_value = doc.get('date')
+            if not date_value:
+                # If no date field, include in other documents
                 monthly_documents.append(doc)
                 continue
 
             # Convert to string and check format
             date_str = str(date_value).strip()
 
-            # Check if it's in yyyymmdd format and ends with '01' (monthly record)
-            if len(date_str) == 6 and date_str.isdigit():
+            # Monthly records: 6-digit format (YYYYMM) or 8-digit ending with '01'
+            if (len(date_str) == 6 and date_str.isdigit()) or \
+               (len(date_str) == 8 and date_str.isdigit() and date_str.endswith('01')):
                 monthly_documents.append(doc)
             else:
-                filtered_count += 1
-                self.log.debug(f"Filtered out daily record with date: {date_str}")
+                other_documents.append(doc)
 
-        if filtered_count > 0:
-            self.log.info(f"Filtered out {filtered_count} daily records, kept {len(monthly_documents)} monthly records")
-        else:
-            self.log.info(f"No daily records found to filter, kept all {len(monthly_documents)} records")
-
+        self.log.info(f"Monthly filter: {len(documents)} documents -> {len(monthly_documents)} monthly records, {len(other_documents)} other records")
         return monthly_documents
+
+    def _normalize_date(self, date: Union[str, int]) -> str:
+        """
+        Normalize a date string to the format YYYY-MM.
+
+        Handles both %Y%m (YYYYMM) and %Y-%m-%d (YYYY-MM-DD) formats.
+        For monthly records, extracts year-month from full dates.
+
+        :param date: Date string to normalize
+        :return: Normalized date string in YYYY-MM format
+        """
+        date = str(date)
+
+        try:
+            # Try YYYYMM format first
+            if len(date) == 6 and date.isdigit():
+                return datetime.strptime(date, '%Y%m').strftime('%Y-%m')
+            # Try YYYY-MM-DD format - extract year-month
+            elif len(date) == 10 and date.count('-') == 2:
+                return date[:7]  # Extract YYYY-MM from YYYY-MM-DD
+            # Try YYYYMMDD format - extract year-month
+            elif len(date) == 8 and date.isdigit():
+                return datetime.strptime(date, '%Y%m%d').strftime('%Y-%m')
+            else:
+                # If format is not recognized, return as-is
+                self.log.warning(f"Unrecognized date format: {date}")
+                return date
+        except ValueError as e:
+            self.log.error(f"Error parsing date '{date}': {e}")
+            return date
 
 
 class StockJsonToMongoOperator(JSONToMongoOperator):
@@ -459,7 +613,7 @@ class StockJsonToMongoOperator(JSONToMongoOperator):
 
         filtered_doc = {}
         excluded_count = 0
-        
+
         for key, value in document.items():
             if key not in self.exclude_fields:
                 filtered_doc[key] = value
@@ -540,10 +694,6 @@ class StockJsonToMongoOperator(JSONToMongoOperator):
         :param date: Optional date to add to each document
         :return: List of transformed documents
         """
-        # Apply collection-specific filtering
-        if self.collection_name == "woongjin__stock_by_sku_monthly":
-            documents = self._filter_monthly_records(documents)
-
         transformed_documents = []
 
         for i, doc in enumerate(documents):
@@ -558,9 +708,20 @@ class StockJsonToMongoOperator(JSONToMongoOperator):
                 # Exclude specified fields
                 filtered_doc = self._exclude_document_fields(transformed_doc)
 
-                # Add date information if provided
-                if date:
+                # Add date information if provided, but only if 'date' field doesn't already exist
+                if date and 'date' not in filtered_doc:
                     filtered_doc.update({'_date': date})
+
+                # Convert date field to YYYY-MM-DD format if it's 8 digits (YYYYMMDD)
+                if date := filtered_doc.get("date"):
+                    normalized_date = self._normalize_date(date)
+                    if normalized_date:
+                        filtered_doc["date"] = normalized_date
+                        self.log.debug(f"Converted date field from '{date}' to '{normalized_date}'")
+                    else:
+                        # Skip documents with non-YYYYMMDD date format
+                        self.log.info(f"Skipping document at index {i} due to non-YYYYMMDD date format: '{date}'")
+                        continue
 
                 # Add metadata
                 final_doc = self.add_document_metadata(filtered_doc)
@@ -573,46 +734,27 @@ class StockJsonToMongoOperator(JSONToMongoOperator):
 
         return transformed_documents
 
-    def _filter_monthly_records(self, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _normalize_date(self, date: Union[str, int]) -> Optional[str]:
         """
-        Filter documents to only include monthly records (yyyymmdd format where day is '01').
+        Normalize a date string to the format YYYY-MM-DD.
+        Only processes 8-digit YYYYMMDD format, skips all other formats.
 
-        This method is specifically for the collection
-        to exclude daily records and only keep monthly records.
-
-        :param documents: List of documents to filter
-        :return: Filtered list containing only monthly records
+        :param date: Date string to normalize
+        :return: Normalized date string in YYYY-MM-DD format, or None if not YYYYMMDD format
         """
-        monthly_documents = []
-        filtered_count = 0
+        date = str(date)
 
-        for doc in documents:
-            if not isinstance(doc, dict):
-                continue
-
-            # Check if document has a date field
-            date_value = doc.get('date')
-            if not date_value:
-                # If no date field, include the document (let other validation handle it)
-                monthly_documents.append(doc)
-                continue
-
-            # Convert to string and check format
-            date_str = str(date_value).strip()
-
-            # Check if it's in yyyymmdd format and ends with '01' (monthly record)
-            if len(date_str) == 6 and date_str.isdigit():
-                monthly_documents.append(doc)
+        try:
+            # Only process 8-digit YYYYMMDD format
+            if len(date) == 8 and date.isdigit():
+                return datetime.strptime(date, '%Y%m%d').strftime('%Y-%m-%d')
             else:
-                filtered_count += 1
-                self.log.debug(f"Filtered out daily record with date: {date_str}")
-
-        if filtered_count > 0:
-            self.log.info(f"Filtered out {filtered_count} daily records, kept {len(monthly_documents)} monthly records")
-        else:
-            self.log.info(f"No daily records found to filter, kept all {len(monthly_documents)} records")
-
-        return monthly_documents
+                # Skip all other formats
+                self.log.debug(f"Skipping non-YYYYMMDD date format: '{date}'")
+                return None
+        except ValueError as e:
+            self.log.error(f"Error parsing date '{date}': {e}")
+            return None
 
 
 class CoupangDPSJsonToMongoOperator(JSONToMongoOperator):
@@ -635,3 +777,25 @@ class CoupangDPSJsonToMongoOperator(JSONToMongoOperator):
             add_metadata=True,
             **kwargs
         )
+
+    def add_document_metadata(self, document: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Add metadata to a document.
+
+        :param document: Document to add metadata to
+        :return: Document with metadata
+        """
+        if not self.add_metadata:
+            return document
+
+        metadata = {
+            "_processed_at": datetime.now(timezone.utc),
+            "date": datetime.now(timezone.utc).strftime('%Y-%m-%d'),
+        }
+
+        # Add custom metadata fields
+        metadata.update(self.metadata_fields)
+
+        # Add metadata to document
+        document.update(metadata)
+        return document

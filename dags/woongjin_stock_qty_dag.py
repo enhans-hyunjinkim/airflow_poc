@@ -16,7 +16,7 @@ with DAG(
         "woongjin_stock_qty_dag",
         default_args=default_args,
         description="Woongjin Quantity DAG",
-        schedule='0 3 * * *', # 10:00 KST
+        schedule='0 1 * * *', # 10:00 KST
         catchup=False,
         tags=["stock", "woongjin"],
         render_template_as_native_obj=True,

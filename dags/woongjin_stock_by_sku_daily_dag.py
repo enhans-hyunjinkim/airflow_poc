@@ -15,7 +15,7 @@ with DAG(
         "woongjin_stock_by_sku_daily_dag",
         default_args=default_args,
         description="Woongjin Stock by SKU Daily DAG",
-        schedule='0 3 * * *', # 10:00 KST
+        schedule='0 1 * * *', # 10:00 KST
         catchup=False,
         tags=["stock", "woongjin"],
         render_template_as_native_obj=True,
@@ -56,7 +56,7 @@ with DAG(
         conn_id='mongo_agent_ground',
         collection='woongjin__stock_by_sku_daily',
         documents="{{ ti.xcom_pull(task_ids='transform_stock_data') }}",
-        filter_fields=['sku_id', '_date'],
+        filter_fields=['sku_id', 'date'],
         many=True
     )
 
