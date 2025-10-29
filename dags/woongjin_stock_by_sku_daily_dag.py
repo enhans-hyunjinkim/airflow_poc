@@ -46,7 +46,8 @@ with DAG(
     transform_stock_data = StockJsonToMongoOperator(
         task_id='transform_stock_data',
         source_task_id="download_stock_data",
-        collection_name='woongjin__stock_by_sku_daily'
+        collection_name='woongjin__stock_by_sku_daily',
+        exclude_fields=['stock_qty_by_date']
     )
 
 
@@ -56,7 +57,7 @@ with DAG(
         conn_id='mongo_agent_ground',
         collection='woongjin__stock_by_sku_daily',
         documents="{{ ti.xcom_pull(task_ids='transform_stock_data') }}",
-        filter_fields=['sku_id', 'date'],
+        filter_fields=['sku_id', '_date'],
         many=True
     )
 

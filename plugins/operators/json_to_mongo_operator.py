@@ -311,7 +311,7 @@ class SalesJsonToMongoOperator(JSONToMongoOperator):
 
                 # Extract documents and date from this item
                 documents = item.get('data', [])
-                date = item.get('_date')
+                date = item.get('date') or item.get('_date')
 
                 if not isinstance(documents, list):
                     self.log.warning("Expected 'data' field to be a list")
@@ -626,6 +626,104 @@ class StockJsonToMongoOperator(JSONToMongoOperator):
 
         return filtered_doc
 
+    def execute(self, context):
+        """
+        Execute the stock JSON data transformation with date extraction.
+
+        :param context: Airflow context
+        :return: Transformed JSON data documents
+        """
+        self.log.info(f"Starting stock JSON data transformation from task: {self.source_task_id}")
+
+        # Get data from previous task
+        try:
+            raw_data = context['ti'].xcom_pull(task_ids=self.source_task_id)
+            if raw_data is None:
+                raise AirflowException(f"No data found from task: {self.source_task_id}")
+        except Exception as e:
+            raise AirflowException(f"Failed to retrieve data from {self.source_task_id}: {e}")
+
+        # Extract date from the raw data for woongjin__stock_by_sku_daily collection
+        extracted_date = None
+        if self.collection_name == 'woongjin__stock_by_sku_daily':
+            if isinstance(raw_data, list):
+                # For mapped tasks, extract date from the first item's request data
+                for item in raw_data:
+                    if isinstance(item, dict):
+                        # Try to get date from the item's request data (original date parameter)
+                        if 'date' in item:
+                            extracted_date = item.get('date')
+                            self.log.info(f"Extracted date from mapped task request data: {extracted_date}")
+                            break
+                        # Also check if _date is already in the response
+                        elif '_date' in item:
+                            extracted_date = item.get('_date')
+                            self.log.info(f"Extracted _date from mapped task response data: {extracted_date}")
+                            break
+            elif isinstance(raw_data, dict):
+                # Try to get date from the request data
+                if 'date' in raw_data:
+                    extracted_date = raw_data.get('date')
+                    self.log.info(f"Extracted date from single task request data: {extracted_date}")
+                # Also check if _date is already in the response
+                elif '_date' in raw_data:
+                    extracted_date = raw_data.get('_date')
+                    self.log.info(f"Extracted _date from single task response data: {extracted_date}")
+
+        # Store the extracted date for use in add_document_metadata
+        self._extracted_date = extracted_date
+        self.log.info(f"Stored extracted_date: {self._extracted_date} for collection: {self.collection_name}")
+
+        # Transform the data using our own transform_json_data method
+        try:
+            transformed_data = self.transform_json_data(raw_data)
+
+            if not transformed_data:
+                self.log.warning("No valid JSON data found after transformation")
+                raise AirflowSkipException("No valid JSON data to process")
+
+            self.log.info(f"JSON data transformation completed. Generated {len(transformed_data)} documents")
+            return transformed_data
+
+        except AirflowSkipException:
+            # Re-raise AirflowSkipException as-is
+            raise
+        except Exception as e:
+            raise AirflowException(f"Failed to transform JSON data: {e}")
+
+    def add_document_metadata(self, document: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Add metadata to document, including _date field for woongjin__stock_by_sku_daily collection.
+
+        :param document: Document to add metadata to
+        :return: Document with metadata added
+        """
+        # No date field check needed - this is handled by individual operators
+
+        metadata = self.metadata_fields.copy() if self.metadata_fields else {}
+        metadata['_processed_at'] = datetime.now(timezone.utc)
+
+        # Add _date field for woongjin__stock_by_sku_daily collection
+        self.log.info(f"Checking _date field addition for collection: {self.collection_name}")
+        self.log.info(f"hasattr(self, '_extracted_date'): {hasattr(self, '_extracted_date')}")
+        if hasattr(self, '_extracted_date'):
+            self.log.info(f"self._extracted_date: {self._extracted_date}")
+
+        if self.collection_name == 'woongjin__stock_by_sku_daily' and hasattr(self, '_extracted_date') and self._extracted_date:
+            # Normalize the extracted date to YYYY-MM-DD format
+            normalized_date = self._normalize_date(self._extracted_date)
+            if normalized_date:
+                metadata['_date'] = normalized_date
+                self.log.info(f"Added _date field to metadata: {normalized_date}")
+            else:
+                self.log.warning(f"Failed to normalize extracted date '{self._extracted_date}'")
+        else:
+            self.log.info(f"Skipping _date field addition - collection: {self.collection_name}, has_extracted_date: {hasattr(self, '_extracted_date')}, extracted_date: {getattr(self, '_extracted_date', None)}")
+
+        document.update(metadata)
+
+        return document
+
     def transform_json_data(self, raw_data: Any) -> List[Dict[str, Any]]:
         """
         Transform raw JSON data into MongoDB documents.
@@ -658,7 +756,7 @@ class StockJsonToMongoOperator(JSONToMongoOperator):
 
                 # Extract documents and date from this item
                 documents = item.get('data', [])
-                date = item.get('_date')
+                date = item.get('date') or item.get('_date')
 
                 if not isinstance(documents, list):
                     self.log.warning("Expected 'data' field to be a list")
@@ -737,20 +835,35 @@ class StockJsonToMongoOperator(JSONToMongoOperator):
     def _normalize_date(self, date: Union[str, int]) -> Optional[str]:
         """
         Normalize a date string to the format YYYY-MM-DD.
-        Only processes 8-digit YYYYMMDD format, skips all other formats.
+        Handles various input formats and converts to YYYY-MM-DD.
 
         :param date: Date string to normalize
-        :return: Normalized date string in YYYY-MM-DD format, or None if not YYYYMMDD format
+        :return: Normalized date string in YYYY-MM-DD format, or None if invalid format
         """
         date = str(date)
 
         try:
-            # Only process 8-digit YYYYMMDD format
-            if len(date) == 8 and date.isdigit():
+            # Handle YYYY-MM-DD format (already correct)
+            if len(date) == 10 and date.count('-') == 2:
+                # Validate the format
+                datetime.strptime(date, '%Y-%m-%d')
+                return date
+
+            # Handle YYYYMMDD format (8 digits)
+            elif len(date) == 8 and date.isdigit():
                 return datetime.strptime(date, '%Y%m%d').strftime('%Y-%m-%d')
+
+            # Handle other formats - try to parse and convert
             else:
-                # Skip all other formats
-                self.log.debug(f"Skipping non-YYYYMMDD date format: '{date}'")
+                # Try common date formats
+                for fmt in ['%Y-%m-%d', '%Y/%m/%d', '%Y%m%d', '%Y-%m-%d %H:%M:%S']:
+                    try:
+                        parsed_date = datetime.strptime(date, fmt)
+                        return parsed_date.strftime('%Y-%m-%d')
+                    except ValueError:
+                        continue
+
+                self.log.debug(f"Unable to parse date format: '{date}'")
                 return None
         except ValueError as e:
             self.log.error(f"Error parsing date '{date}': {e}")
@@ -765,16 +878,20 @@ class CoupangDPSJsonToMongoOperator(JSONToMongoOperator):
     field inference and transformation logic.
     """
 
+    template_fields = ('metadata_fields',)
+
     def __init__(
         self,
         source_task_id: str,
         collection_name: str = "coupang__dps_data",
+        metadata_fields: Optional[Dict[str, Any]] = None,
         **kwargs,
     ):
         super().__init__(
             source_task_id=source_task_id,
             collection_name=collection_name,
             add_metadata=True,
+            metadata_fields=metadata_fields,
             **kwargs
         )
 
@@ -788,14 +905,11 @@ class CoupangDPSJsonToMongoOperator(JSONToMongoOperator):
         if not self.add_metadata:
             return document
 
-        metadata = {
-            "_processed_at": datetime.now(timezone.utc),
-            "date": datetime.now(timezone.utc).strftime('%Y-%m-%d'),
-        }
+        if 'date' not in self.metadata_fields.keys():
+            raise AirflowException("'date' is required in metadata_fields")
 
-        # Add custom metadata fields
-        metadata.update(self.metadata_fields)
-
-        # Add metadata to document
+        metadata = self.metadata_fields.copy()
+        metadata['_processed_at'] = datetime.now(timezone.utc)
         document.update(metadata)
+
         return document
